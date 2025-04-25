@@ -282,15 +282,16 @@ server.bind(port, address, () => {
       // check player colission
       players.forEach((otherPlayer, otherKey) => {
         if (otherPlayer.id === player.id) return;
+        if(!otherPlayer.alive) return;
         const otherSnake = otherPlayer.snake;
         for (let i = 0; i < otherSnake.length; i++) {
           if (otherSnake[i].x === head.x && otherSnake[i].y === head.y) {
             player.alive = false;
+            const deathPacket = JSON.stringify({ type: "deathEvent", playerId: player.id, playerName: player.name });
+            broadcast(deathPacket)
             for (let i = 0; i < player.snake.length; i++) {
               otherSnake.push(player.snake[i]);
             }
-            const deathPacket = JSON.stringify({ type: "deathEvent", playerId: player.id, playerName: player.name });
-            broadcast(deathPacket)  
             return;
           }
         }
