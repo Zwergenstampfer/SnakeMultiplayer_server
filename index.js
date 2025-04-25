@@ -21,6 +21,9 @@ const game = {
   paused: false
 }
 
+const chatHistory = [];
+let messageCounter = 0;
+
 const rl = readline.createInterface({
   input: process.stdin,
   output: process.stdout
@@ -100,12 +103,19 @@ server.on("message", (msg, rinfo) => {
       console.log(`[CONNECT] ${senderKey} connected`);
     }
     if(data.type === "disconnect") {
-      const disconnectData = JSON.stringify({ type: "disconnect", id: data.id, name: data.name, color: data.color});
-      server.send(disconnectData, rinfo.port, rinfo.address);
-    
-      console.log(`[DISCONNECT] ${senderKey} disconnected`);
-      players.delete(senderKey); // somehow this doesnt work?
-    }
+      const player = players.get(senderKey);
+      if (player) {
+        const disconnectData = JSON.stringify({ 
+          type: "disconnect", 
+          id: player.id, 
+          name: player.name, 
+          color: player.color 
+        });
+        broadcast(disconnectData);
+        console.log(`[DISCONNECT] ${senderKey} disconnected`);
+        players.delete(senderKey);
+      }
+    }    
     if(data.type === "spawn") {
       const initialSnake = [];
       const spawnPosition = {
@@ -165,6 +175,31 @@ server.on("message", (msg, rinfo) => {
       server.send(pingPacket, rinfo.port, rinfo.address);
     }
 
+    if(data.type === "chat") {
+      const playerId = data.playerId;
+      const playerName = data.playerName;
+      const message = data.message;
+
+      players.forEach((player, key) => {
+        if(player.id != playerId) return;
+
+        // generate a message id    
+        const messageId = `msg_${messageCounter++}`;
+
+        chatHistory.push({
+          messageId: messageId,
+          playerId: player.id,
+          playerName: player.name,
+          message: message,
+          timestamp: Date.now() // optional, for sorting or timestamps
+        });
+        if(chatHistory > 100) {
+          chatHistory.shift();
+        } 
+        const chatPacket = JSON.stringify({ type: "chat", chatHistory })
+        broadcast(chatPacket)
+      })
+    }
   } catch (err) {
     console.error("Failed to parse message:", msg.toString());
     console.error(err);
@@ -200,7 +235,7 @@ server.bind(port, address, () => {
         speed: player.speed
       }})
     })
-
+    
     const packet = JSON.stringify({ type: "players", playerList });
     broadcast(packet);
 
@@ -229,16 +264,37 @@ server.bind(port, address, () => {
       // Check border collision
       if (head.x < 0 || head.y < 0 || head.x >= mapWidth || head.y >= mapHeight) {
         player.alive = false;
+        const deathPacket = JSON.stringify({ type: "deathEvent", playerId: player.id, playerName: player.name });
+        broadcast(deathPacket)
         return;
       }
 
       // Check self collision
-      for(let i = 1; i < snake.length; i++) { // Changed loop condition to include the head
+      for(let i = 1; i < snake.length; i++) {
         if (snake[i].x === head.x && snake[i].y === head.y) {
           player.alive = false;
+          const deathPacket = JSON.stringify({ type: "deathEvent", playerId: player.id, playerName: player.name });
+          broadcast(deathPacket)
           return;
         }
       }
+
+      // check player colission
+      players.forEach((otherPlayer, otherKey) => {
+        if (otherPlayer.id === player.id) return;
+        const otherSnake = otherPlayer.snake;
+        for (let i = 0; i < otherSnake.length; i++) {
+          if (otherSnake[i].x === head.x && otherSnake[i].y === head.y) {
+            player.alive = false;
+            for (let i = 0; i < player.snake.length; i++) {
+              otherSnake.push(player.snake[i]);
+            }
+            const deathPacket = JSON.stringify({ type: "deathEvent", playerId: player.id, playerName: player.name });
+            broadcast(deathPacket)  
+            return;
+          }
+        }
+      })
 
       // Update snake
       snake.unshift({ x: head.x, y: head.y });
@@ -249,7 +305,9 @@ server.bind(port, address, () => {
         if (head.x == foods[i].x && head.y == foods[i].y) {
           eatFood(head.x, head.y);
           ateFood = true;
-          player.speed -= 0.001; // Adjust speed on eating
+          player.speed -= 0.001;
+          const fP = JSON.stringify({ type: "eatEvent", playerId: player.id, playerName: player.name, x: head.x, y: head.y });
+          broadcast(fP);
           break;
         }
       }
@@ -270,7 +328,7 @@ rl.on('line', (input) => {
 
   switch (command) {
     case 'list':
-      console.log("Connected Players:");
+      console.log(`Connected Players (${players.size}/12):`);
       players.forEach((p, key) => {
         console.log(`- ID ${p.id}, Name: ${p.name}, Alive: ${p.alive}, Addr: ${key}`);
       });
@@ -286,7 +344,88 @@ rl.on('line', (input) => {
       } else {
         console.log(`[ADMIN] No player found with ID ${idToKick}`);
       }
-      break;
+    break;
+
+    case 'grow':
+      const growId = parseInt(args[1]);
+      const playerToGrow = findPlayerById(growId);
+
+      if(args.length == 3) {
+        const growAmount = parseInt(args[2]);
+
+        if(!playerToGrow) {
+          console.log(`[ADMIN] No player found with ID ${growId}`);
+        }
+
+        for(let i = 0; i < growAmount; i++) {
+          const snake = playerToGrow.snake;
+          const head = { x: snake[0].x, y: snake[0].y };
+          snake.unshift({ x: head.x, y: head.y })
+        }
+        console.log(`[ADMIN] Grown player with ID ${growId} ${growAmount} times`);
+      }
+
+      if(args.length == 2) {
+        if(playerToGrow) {
+          const snake = playerToGrow.snake;
+          const head = { x: snake[0].x, y: snake[0].y };
+          snake.unshift({ x: head.x, y: head.y })
+          console.log(`[ADMIN] Grown player with ID ${growId}`);
+        } else {
+          console.log(`[ADMIN] No player found with ID ${growId}`);
+        }
+      }
+    break;
+
+    case 'shrink':
+      const shrinkId = parseInt(args[1]);
+      const playerToShrink = findPlayerById(shrinkId);
+      if(args.length == 3) {
+        const shrinkAmount = parseInt(args[2]);
+
+        if(!playerToShrink) {
+          console.log(`[ADMIN] No player found with ID ${shrinkId}`);
+          return;
+        }
+
+        if(playerToShrink.snake.length <= 1) {
+          console.log(`[ADMIN] Cannot shrink player with ID ${shrinkId} because he would die`);
+          return;
+        }
+
+        for(let i = 0; i < shrinkAmount; i++) {
+          const snake = playerToShrink.snake;
+          snake.pop();
+        }
+        console.log(`[ADMIN] Shrinked player with ID ${shrinkId} ${shrinkAmount} times`);
+      }
+
+      if(args.length == 2) {
+        if(playerToShrink) {
+          const snake = playerToShrink.snake;
+          if(playerToShrink.snake.length <= 1) {
+            console.log(`[ADMIN] Cannot shrink player with ID ${shrinkId} because he would die`);
+            return;
+          }
+          snake.pop();
+          console.log(`[ADMIN] Shrinked player with ID ${shrinkId}`);
+        } else {
+          console.log(`[ADMIN] No player found with ID ${shrinkId}`);
+        }
+      }
+    break;
+
+    case 'kill':
+      const killId = parseInt(args[1]);
+      const playerToKill = findPlayerById(killId);
+
+      if(playerToKill) {
+        playerToKill.alive = false;
+        console.log(`[ADMIN] Killed player with ID ${killId}`);
+      } else {
+        console.log(`[ADMIN] No player found with ID ${killId}`);
+      }
+    break;
 
     case 'food':
       const x = Math.floor(Math.random() * mapWidth);
@@ -304,7 +443,10 @@ rl.on('line', (input) => {
       console.log(`Commands:
   list               - List connected players
   kick [id]          - Kick player by ID
-  food               - Spawn a food item
+  kill [id]          - Kill player by ID
+  food               - Spawn food
+  grow [id]          - Grow the player
+  shrink [id]        - Shrink the player
   clear              - Clear the console
   help               - Show commands
   exit               - Quit the server
@@ -328,3 +470,15 @@ rl.on('line', (input) => {
       break;
   }
 });
+
+function findPlayerById(id) {
+  let player;
+
+  players.forEach((p, key) => {
+    if (p.id === id) {
+      player = p;
+    }
+  });
+
+  return player;
+}
