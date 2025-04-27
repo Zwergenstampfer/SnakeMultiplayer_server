@@ -143,7 +143,6 @@ server.on("message", (msg, rinfo) => {
         // Remove the eaten food
         foods.splice(foodIndex, 1);
 
-        // Spawn a new food
         const newFood = {
           x: Math.floor(Math.random() * mapWidth),
           y: Math.floor(Math.random() * mapHeight)
